@@ -1,0 +1,3 @@
+# Written by scripts/update_aiter_package.py; collapsed in GitHub diffs.
+aiter-*/instances/** linguist-generated=true
+aiter-moe-ops/build.toml linguist-generated=true

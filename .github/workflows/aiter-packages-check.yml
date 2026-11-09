@@ -1,0 +1,56 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+#
+# Checks that every AMD package's generated files (CK instances, build.toml)
+# match its pinned AITER and Composable Kernel revisions, by running
+# scripts/update_aiter_package.py --check for each sync/*.toml. Fails when a
+# submodule was moved without regenerating, or a generated file was edited.
+
+name: AITER packages check
+
+on:
+  pull_request:
+    paths:
+      - ".gitmodules"
+      - "aiter-*/**"
+      - "scripts/update_aiter_package.py"
+      - "sync/**"
+  push:
+    branches: [main]
+    paths:
+      - ".gitmodules"
+      - "aiter-*/**"
+      - "scripts/update_aiter_package.py"
+      - "sync/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Generated files match the pins
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository and submodules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Check every AMD package
+        run: |
+          set -euo pipefail
+          for cfg in sync/*.toml; do
+            python3 scripts/update_aiter_package.py "$cfg" --check
+          done

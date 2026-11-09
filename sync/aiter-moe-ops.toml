@@ -1,0 +1,43 @@
+# Maintainer config for the aiter-moe-ops AMD package. Never shipped to the Hub.
+#
+# scripts/update_aiter_package.py reads this file, checks the AITER pin and writes
+# the package's build.toml. After moving the AITER submodule, run:
+#
+#   python3 scripts/update_aiter_package.py sync/aiter-moe-ops.toml [--to <release>]
+#
+# CI runs the same command with --check and fails if anything is out of date.
+
+package = "aiter-moe-ops"
+
+[general]
+version = 1
+# topk_softmax_kernels.cu is Apache-2.0 (adapted from vLLM and TensorRT-LLM).
+license = "Apache-2.0"
+upstream = "https://github.com/ROCm/aiter"
+source = "https://github.com/ROCm/rocm-community-kernels"
+repo-id = "amd/aiter-moe-ops"
+
+# The package builds straight from this upstream revision; nothing is copied. Plain
+# HIP kernels need no Composable Kernel, so AITER's CK submodule isn't checked out.
+[aiter]
+path = "aiter"  # git submodule → ROCm/aiter, relative to the package directory
+ref = "v0.1.29"  # the AITER release tag (or commit) the pin came from
+commit = "a0c4b69c146d94e393984bbe553b704e8c89a5e4"
+
+[torch]
+src = ["torch-ext/torch_binding.cpp", "torch-ext/torch_binding.h"]
+# One build per ROCm version for every Torch >= 2.10; adding ops needs no version bump.
+stable-abi = "2.10"
+
+[kernel]
+name = "aiter_moe_ops"
+rocm-archs = ["gfx942", "gfx950"]
+# ENABLE_CK is left undefined, so AITER's aiter_hip_common.h uses its own
+# ck_tile_shim.h instead of Composable Kernel.
+include = ["csrc", "aiter/csrc/include"]
+# AITER kernels compiled unchanged, plus the package's bridge for each op. Every
+# header they include is found by following #include lines and listed in build.toml.
+sources = [
+    "aiter/csrc/kernels/topk_softmax_kernels.cu",
+    "csrc/topk_softmax_torch.hip",
+]

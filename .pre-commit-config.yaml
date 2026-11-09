@@ -1,6 +1,11 @@
 # See https://pre-commit.com for more information
 # See https://pre-commit.com/hooks.html for more hooks
 
+# Generated files (scripts/update_aiter_package.py) must stay byte-identical to the
+# generator's output, which CI checks with --check, so hooks leave them alone. CARD.md
+# files are Jinja templates rendered by kernel-builder, which mdformat would break.
+exclude: '^aiter-[^/]+/instances/|^aiter-moe-ops/build\.toml$|(^|/)CARD\.md$'
+
 repos:
 -   repo: https://github.com/pre-commit/pre-commit-hooks
     rev: e1668fe86af3810fbca72b8653fe478e66a0afdc  # frozen: v3.2.0

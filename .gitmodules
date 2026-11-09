@@ -1,0 +1,4 @@
+[submodule "aiter-moe-ops/aiter"]
+	path = aiter-moe-ops/aiter
+	url = https://github.com/ROCm/aiter.git
+	shallow = true
