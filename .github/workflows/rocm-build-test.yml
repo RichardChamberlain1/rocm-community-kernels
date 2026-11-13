@@ -1,0 +1,125 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+#
+# Builds one kernel with kernel-builder and runs its `kernels_ci` tests on an AMD
+# GPU. Called by kernel-ci.yml (pull requests: one representative variant) and by
+# publish.yml (every variant, kept as an artifact for the upload job).
+#
+# It runs scripts/kernel_ci.py, the same stages contributors can run locally,
+# with --fail-on-skip so that a missing GPU, missing Nix or a GPU the kernel
+# doesn't target fails the gate instead of skipping it.
+#
+# Runner: a self-hosted MI350 (gfx950) with Nix installed and /dev/kfd and
+# /dev/dri usable by the runner user; see docs/poc/goal1.md. No job here gets
+# secrets, because pull request code runs on it.
+
+name: ROCm build and test
+
+on:
+  workflow_call:
+    inputs:
+      kernel:
+        description: Kernel directory name
+        required: true
+        type: string
+      variants:
+        description: "ci: one representative variant (.#backendCi); all: every variant (.#backendBundle)"
+        required: false
+        type: string
+        default: ci
+      keep-build:
+        description: Upload the build/ directory as the artifact build-<kernel>
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Build and GPU test
+    runs-on: [self-hosted, linux, x64, gfx950]
+    # Compiled kernels with every variant can take hours.
+    timeout-minutes: 720
+    steps:
+      # Reject kernel names outside the safe charset before any step uses them.
+      - name: Validate kernel name
+        env:
+          KERNEL: ${{ inputs.kernel }}
+          VARIANTS: ${{ inputs.variants }}
+        run: |
+          case "$KERNEL" in
+            ''|*[!A-Za-z0-9_-]*)
+              echo "::error::Invalid kernel name: must match ^[A-Za-z0-9_-]+$"
+              exit 1
+              ;;
+          esac
+          case "$VARIANTS" in
+            ci|all) ;;
+            *) echo "::error::variants must be ci or all"; exit 1 ;;
+          esac
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Show toolchain and GPU
+        run: |
+          nix --version
+          ls -l /dev/kfd /dev/dri
+          if command -v rocminfo > /dev/null; then
+            rocminfo | grep -E '^\s+Name:\s+gfx' | sort -u
+          fi
+
+      # validate (wrapping and community rules, kernel-builder check-config),
+      # build (nix build, check-abi), test (nix build .#ci-test, run it on the GPU).
+      - name: Build and test
+        env:
+          KERNEL: ${{ inputs.kernel }}
+          VARIANTS: ${{ inputs.variants }}
+        run: |
+          args=(--kernel "$KERNEL" --stages validate,build,test --fail-on-skip)
+          if [ "$VARIANTS" = "ci" ]; then
+            args+=(--ci)
+          fi
+          python scripts/kernel_ci.py run "${args[@]}" \
+            --out "$RUNNER_TEMP/ci-out" --run-id "$KERNEL"
+
+      - name: Write job summary
+        if: always()
+        env:
+          KERNEL: ${{ inputs.kernel }}
+        run: |
+          SUMMARY="$RUNNER_TEMP/ci-out/$KERNEL/summary.md"
+          if [ -f "$SUMMARY" ]; then
+            cat "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-${{ inputs.kernel }}-${{ inputs.variants }}
+          path: |
+            ${{ runner.temp }}/ci-out
+            !${{ runner.temp }}/ci-out/**/build
+            !${{ runner.temp }}/ci-out/**/result-*
+            !${{ runner.temp }}/ci-out/**/ci-test
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload build
+        if: inputs.keep-build
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-${{ inputs.kernel }}
+          path: ${{ runner.temp }}/ci-out/${{ inputs.kernel }}/${{ inputs.kernel }}/build
+          if-no-files-found: error
+          retention-days: 3
