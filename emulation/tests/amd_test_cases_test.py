@@ -1,6 +1,6 @@
-"""The AMD test cases (emulation/test-kernels.toml) against a checkout of their sources.
+"""The AMD test cases (emulation/test-kernels.toml) against their sources.
 
-Skipped unless TEST_KERNELS_ROOT points at the directory holding the kernels.
+The kernels are in the repository root; TEST_KERNELS_ROOT points elsewhere instead.
 """
 
 import os
@@ -18,16 +18,19 @@ sys.path.insert(0, str(EMULATION.parent / "scripts"))
 import check_wrapping  # noqa: E402
 
 DOC = tomllib.loads(LIST.read_text())
-ROOT = Path(os.environ.get("TEST_KERNELS_ROOT", "/nonexistent"))
+ROOT = Path(os.environ.get("TEST_KERNELS_ROOT") or EMULATION.parent)
 CASES = DOC["kernel"]
 
 pytestmark = pytest.mark.skipif(
-    not ROOT.is_dir(), reason="set TEST_KERNELS_ROOT to run these"
+    not all((ROOT / c["path"]).is_dir() for c in CASES),
+    reason=f"the test kernels aren't all in {ROOT}",
 )
 
 
-def test_list_excludes_composable_kernel():
-    assert all("-ck" not in case["path"] for case in CASES)
+def test_list_excludes_composable_kernel_and_bundle():
+    assert all(
+        "-ck" not in case["path"] and case["path"] != "aiter-kernels" for case in CASES
+    )
 
 
 @pytest.mark.parametrize("case", CASES, ids=[c["path"] for c in CASES])

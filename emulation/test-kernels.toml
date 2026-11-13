@@ -1,12 +1,12 @@
-# Test cases for the CI emulation: the sources of AMD's existing amd/* Hub kernels.
+# Test cases for the CI emulation: three of AMD's existing amd/* Hub kernels, copied into
+# this repository unchanged (aiter-flash-attn, aiter-rope, aiter-sage-attention).
 #
 # These packages are built today by Hugging Face, so they exercise the CI on real,
 # published kernels. They are not community kernels: `rules = "hf"` applies Hugging Face's
 # wrapping rules only (the community rules reserve the aiter- prefix and amd/* for AMD).
-# The Composable Kernel package (aiter-flash-attn-ck) is deliberately left out.
+# Left out: the Composable Kernel package (aiter-flash-attn-ck) and the aiter-kernels bundle.
 #
-#   python emulation/ci_emulate.py run --approved emulation/test-kernels.toml \
-#       --kernels-root <directory holding the kernel sources>
+#   python emulation/ci_emulate.py run --approved emulation/test-kernels.toml
 #
 # Per-kernel keys, in addition to those in approved-kernels.toml:
 #   rules      = "hf" | "community"
@@ -16,10 +16,6 @@
 # GPU stages (test, verify, benchmark) are skipped automatically when this machine's GPU
 # isn't one of the kernel's rocm-archs.
 
-
-[[kernel]]
-path = "aiter-kernels"           # amd/aiter-kernels, version 2: AITER Triton + Gluon (noarch)
-rules = "hf"
 
 [[kernel]]
 path = "aiter-flash-attn"        # amd/aiter-flash-attn, version 2: Triton attention (noarch)

@@ -33,7 +33,7 @@ Results go to `ci-out/<run-id>/`: `summary.md`, `summary.json`, and per kernel
 | `ci_emulate.py`         | the emulated pipeline and the self-test                                                                 |
 | `local_hub.py`          | the emulated Hub: writes the cache layout `get_kernel()` reads offline                                  |
 | `approved-kernels.toml` | kernels to run by default (empty). The real CI has no list: approval is a person approving each publish |
-| `test-kernels.toml`     | AMD's existing `amd/*` kernels, as test cases                                                           |
+| `test-kernels.toml`     | AMD's existing `amd/*` kernels in the repository root, as test cases                                    |
 | `tests/`                | tests for the above, and the real `kernels` loader against the emulated Hub                             |
 
 The real CI uses `scripts/` (`kernel_ci.py`, `check_wrapping.py`,
@@ -89,22 +89,27 @@ python scripts/kernel_ci.py run --kernel <kernel> --ci --fail-on-skip
 
 ## Test cases: AMD's existing kernels
 
-[`test-kernels.toml`](test-kernels.toml) lists the sources of AMD's existing `amd/*`
-Hub packages (`aiter-kernels`, `aiter-flash-attn`,
-`aiter-sage-attention`, `aiter-rope`; the Composable Kernel package is left out). They
-exercise the CI on real, published kernels:
+[`test-kernels.toml`](test-kernels.toml) lists three of AMD's existing `amd/*` Hub
+packages, copied unchanged into the repository root: `aiter-flash-attn`, `aiter-rope` and
+`aiter-sage-attention`. The Composable Kernel package and the `aiter-kernels` bundle are
+left out. They exercise the CI on real, published kernels:
 
 ```bash
-python emulation/ci_emulate.py run --approved emulation/test-kernels.toml --kernels-root /path/to/kernels
+python emulation/ci_emulate.py run --approved emulation/test-kernels.toml
 ```
+
+These are test material, not community kernels: they break the community rules (AITER
+code, `aiter-` names, `amd/*` repo ids), so Kernel CI's validate stage fails on a pull
+request that changes them, and they have no entry in `.github/kernel-maintainers.json`.
+Remove them along with this folder.
 
 The list applies Hugging Face's wrapping rules only (`rules = "hf"`) and records known
 results: `aiter-flash-attn` is expected to fail validation, because none of its tests is
 marked `kernels_ci`, and its later stages still run (`keep_going`). Results that match
 `expect` don't fail the run. GPU stages skip automatically when the machine's GPU isn't one
 of the kernel's `rocm-archs`, e.g. `aiter-sage-attention` (gfx1201 only) on an MI350.
-`emulation/tests/amd_test_cases_test.py` checks the list against the checkout when
-`TEST_KERNELS_ROOT` points at it.
+`emulation/tests/amd_test_cases_test.py` checks the list against the kernels
+(`TEST_KERNELS_ROOT` points it at another checkout).
 
 ## Checking the emulation against the real Hub
 
