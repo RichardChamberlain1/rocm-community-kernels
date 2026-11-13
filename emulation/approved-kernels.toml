@@ -1,0 +1,14 @@
+# Kernels approved for CI (build, GPU test, publish).
+#
+# One [[kernel]] table per kernel; `path` is relative to --kernels-root
+# (default: the repository root). Optional keys:
+#
+#   backends  = ["rocm"]   # backends to build (nix build .#backendBundle.<backend>)
+#   benchmark = true       # run benchmarks/benchmark.py if the kernel has one
+#   branch    = "staging"  # publish here instead of v<version>
+#
+# No kernels are approved yet. To try a kernel without approving it, use
+# `emulation/ci_emulate.py run --kernel <path>`.
+#
+# [[kernel]]
+# path = "<kernel-dir>"
