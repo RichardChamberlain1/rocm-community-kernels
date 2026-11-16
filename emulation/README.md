@@ -33,7 +33,8 @@ Results go to `ci-out/<run-id>/`: `summary.md`, `summary.json`, and per kernel
 | `ci_emulate.py`         | the emulated pipeline and the self-test                                                                 |
 | `local_hub.py`          | the emulated Hub: writes the cache layout `get_kernel()` reads offline                                  |
 | `approved-kernels.toml` | kernels to run by default (empty). The real CI has no list: approval is a person approving each publish |
-| `test-kernels.toml`     | AMD's existing `amd/*` kernels in the repository root, as test cases                                    |
+| `test-kernels.toml`     | the test kernels to run, with their expected results                                                    |
+| `kernels/`              | the test kernels: three AMD kernels and three fixtures (see below)                                      |
 | `tests/`                | tests for the above, and the real `kernels` loader against the emulated Hub                             |
 
 The real CI uses `scripts/` (`kernel_ci.py`, `check_wrapping.py`,
@@ -87,29 +88,46 @@ python scripts/kernel_ci.py run --kernel <kernel> --ci --fail-on-skip
   upload, then `ci_verify_load.py` against the real Hub, with `--tests-repo-id` so the
   kernel's tests follow a publish to the test organisation.
 
-## Test cases: AMD's existing kernels
+## Test kernels
 
-[`test-kernels.toml`](test-kernels.toml) lists three of AMD's existing `amd/*` Hub
-packages, copied unchanged into the repository root: `aiter-flash-attn`, `aiter-rope` and
-`aiter-sage-attention`. The Composable Kernel package and the `aiter-kernels` bundle are
-left out. They exercise the CI on real, published kernels:
+[`test-kernels.toml`](test-kernels.toml) lists the test kernels in
+[`kernels/`](kernels/). They are test material only: never published, and removed with
+this folder. Kernel CI only looks at top-level kernel directories, so it never sees them.
 
 ```bash
 python emulation/ci_emulate.py run --approved emulation/test-kernels.toml
 ```
 
-These are test material, not community kernels: they break the community rules (AITER
-code, `aiter-` names, `amd/*` repo ids), so Kernel CI's validate stage fails on a pull
-request that changes them, and they have no entry in `.github/kernel-maintainers.json`.
-Remove them along with this folder.
+| Kernel                 | What it is                                                                                 | Rules               | Expected                                                                            |
+| ---------------------- | ------------------------------------------------------------------------------------------ | ------------------- | ----------------------------------------------------------------------------------- |
+| `aiter-flash-attn`     | AMD's `amd/aiter-flash-attn`, as published (Triton)                                        | Hugging Face's only | validate fails (no test marked `kernels_ci`); later stages still run (`keep_going`) |
+| `aiter-rope`           | AMD's `amd/aiter-rope` (Triton); README and docstrings reworded                            | Hugging Face's only | every stage passes                                                                  |
+| `aiter-sage-attention` | AMD's `amd/aiter-sage-attention` (compiled HIP, gfx1201 only)                              | Hugging Face's only | GPU stages skip on an MI350                                                         |
+| `scale-triton`         | Fixture from the `add-community-kernel` Triton template                                    | community           | every stage passes                                                                  |
+| `scale-hip`            | Fixture from the `add-community-kernel` HIP template                                       | community           | every stage passes                                                                  |
+| `bad-community`        | `scale-triton` broken on purpose: reserved `amd` org, no card notice, no `kernels_ci` test | community           | validate fails and every later stage is skipped: the gate stops it before the build |
 
-The list applies Hugging Face's wrapping rules only (`rules = "hf"`) and records known
-results: `aiter-flash-attn` is expected to fail validation, because none of its tests is
-marked `kernels_ci`, and its later stages still run (`keep_going`). Results that match
-`expect` don't fail the run. GPU stages skip automatically when the machine's GPU isn't one
-of the kernel's `rocm-archs`, e.g. `aiter-sage-attention` (gfx1201 only) on an MI350.
-`emulation/tests/amd_test_cases_test.py` checks the list against the kernels
-(`TEST_KERNELS_ROOT` points it at another checkout).
+- **The AMD kernels** exercise the CI on real kernels. They aren't community kernels: the
+  community rules reserve `aiter-` names and the `amd` organisations for AMD, so they're
+  checked with Hugging Face's packaging rules only (`rules = "hf"`). Their test files are
+  renamed to `*_test.py`. The Composable Kernel package and the `aiter-kernels` bundle are
+  left out.
+- **The fixtures** are the `scale(x, factor)` example from the skill's templates. They're not
+  performance-tuned and aren't meant to be real kernels. They run with the community rules
+  from `ci/community.toml`, so they show those rules pass a compliant kernel and stop a
+  non-compliant one.
+
+Results that match `expect` don't fail the run. GPU stages skip automatically when the
+machine's GPU isn't one of the kernel's `rocm-archs`.
+`emulation/tests/kernel_list_test.py` checks the list:
+
+- every expectation holds;
+- `bad-community` fails for exactly its planted reasons;
+- the AMD kernels fail the community rules;
+- the dry run stops `bad-community` at validate.
+
+`TEST_KERNELS_ROOT` points it at another checkout. The fixtures' `flake.lock` files are
+created by the first Nix build.
 
 ## Checking the emulation against the real Hub
 

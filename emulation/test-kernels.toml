@@ -1,21 +1,29 @@
-# Test cases for the CI emulation: three of AMD's existing amd/* Hub kernels, copied into
-# this repository unchanged (aiter-flash-attn, aiter-rope, aiter-sage-attention).
-#
-# These packages are built today by Hugging Face, so they exercise the CI on real,
-# published kernels. They are not community kernels: `rules = "hf"` applies Hugging Face's
-# wrapping rules only (the community rules reserve the aiter- prefix and amd/* for AMD).
-# Left out: the Composable Kernel package (aiter-flash-attn-ck) and the aiter-kernels bundle.
+# Test kernels for the CI emulation, all under emulation/kernels/. They are test material,
+# never published, and removed together with emulation/.
 #
 #   python emulation/ci_emulate.py run --approved emulation/test-kernels.toml
 #
+# Two kinds:
+#
+# - Three of AMD's existing amd/* Hub kernels, copied as published (only aiter-rope's README
+#   and docstrings were reworded, and test files renamed to *_test.py). They exercise the CI
+#   on real kernels, but they are not community kernels: `rules = "hf"` applies Hugging
+#   Face's packaging rules only, since the community rules reserve the aiter- prefix and
+#   amd/* for AMD. Left out: the Composable Kernel package and the aiter-kernels bundle.
+# - Fixtures made from the add-community-kernel skill's templates (the `scale` example, not
+#   performance-tuned). They run with the community rules from ci/community.toml:
+#   scale-triton and scale-hip must pass them, bad-community must be stopped by them.
+#
 # Per-kernel keys, in addition to those in approved-kernels.toml:
-#   rules      = "hf" | "community"
+#   rules      = "hf" | "community"                      # default: community
 #   expect     = { <stage> = "pass" | "fail" | "skip" }  # a matching result doesn't fail the run
 #   keep_going = true                                    # run later stages after an expected failure
 #
 # GPU stages (test, verify, benchmark) are skipped automatically when this machine's GPU
 # isn't one of the kernel's rocm-archs.
 
+# Relative to this file; override with --kernels-root.
+kernels_root = "kernels"
 
 [[kernel]]
 path = "aiter-flash-attn"        # amd/aiter-flash-attn, version 2: Triton attention (noarch)
@@ -30,3 +38,15 @@ rules = "hf"
 [[kernel]]
 path = "aiter-rope"              # amd/aiter-rope, version 3: Triton RoPE (noarch, legacy)
 rules = "hf"
+
+[[kernel]]
+path = "scale-triton"            # rocm-community/scale-triton: fixture, Triton (noarch)
+
+[[kernel]]
+path = "scale-hip"               # rocm-community/scale-hip: fixture, compiled HIP, gfx942/gfx950
+
+# A fixture that breaks the community rules: reserved org, no card notice, no kernels_ci
+# test. No keep_going: the gate must stop it before the build.
+[[kernel]]
+path = "bad-community"           # amd/bad-community
+expect = { validate = "fail" }

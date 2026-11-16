@@ -1,0 +1,13 @@
+[general]
+name = "bad-community"
+version = 1
+edition = 6
+license = "MIT"
+backends = ["rocm"]
+
+[general.hub]
+repo-id = "amd/bad-community"
+
+[torch-noarch]
+
+[kernel]

@@ -1,0 +1,24 @@
+[general]
+name = "scale-hip"
+version = 1
+edition = 6
+license = "MIT"
+backends = ["rocm"]
+
+[general.hub]
+repo-id = "rocm-community/scale-hip"
+
+[torch]
+src = [
+    "torch-ext/torch_binding.cpp",
+    "torch-ext/torch_binding.h",
+]
+
+[kernel.scale_hip_rocm]
+language = "cpp-rocm"
+depends = ["torch"]
+rocm-archs = [
+    "gfx942",
+    "gfx950",
+]
+src = ["csrc/scale.hip"]
