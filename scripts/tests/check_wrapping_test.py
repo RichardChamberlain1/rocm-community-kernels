@@ -159,6 +159,121 @@ def test_card_needs_notice(tmp_path):
     assert "license-file" in codes(f, "warning")
 
 
+def _replace(path: Path, old: str, new: str):
+    text = path.read_text()
+    assert old in text, (path, old)
+    path.write_text(text.replace(old, new))
+
+
+def _rmtree(path: Path):
+    import shutil
+
+    shutil.rmtree(path)
+
+
+AITER_SUBMODULE = (
+    '[submodule "third_party/aiter"]\n'
+    "\tpath = third_party/aiter\n"
+    "\turl = https://github.com/ROCm/aiter\n"
+)
+
+# Break one thing in an otherwise good kernel; the matching finding must fire.
+BREAKAGES = {
+    "flake": (lambda k: (k / "flake.nix").unlink(), "error"),
+    "build-toml": (lambda k: (k / "build.toml").unlink(), "error"),
+    "build-toml-unparseable": (
+        lambda k: (k / "build.toml").write_text("[general\n"),
+        "error",
+    ),
+    "general-name": (
+        lambda k: _replace(k / "build.toml", 'name = "demo-kernel"\n', ""),
+        "error",
+    ),
+    "edition": (lambda k: _replace(k / "build.toml", "edition = 6\n", ""), "warning"),
+    "license": (
+        lambda k: _replace(k / "build.toml", 'license = "Apache-2.0"\n', ""),
+        "error",
+    ),
+    "framework": (
+        lambda k: _replace(
+            k / "build.toml", '[torch]\nsrc = ["torch-ext/torch_binding.cpp"]\n', ""
+        ),
+        "error",
+    ),
+    "framework-two": (
+        lambda k: (k / "build.toml").write_text(
+            (k / "build.toml").read_text() + "\n[torch-noarch]\n"
+        ),
+        "error",
+    ),
+    "rocm-kernel": (
+        lambda k: _replace(k / "build.toml", '"cpp-rocm"', '"cpp-cuda"'),
+        "error",
+    ),
+    "package": (
+        lambda k: (k / "torch-ext" / "demo_kernel" / "__init__.py").unlink(),
+        "error",
+    ),
+    "syntax": (
+        lambda k: (k / "torch-ext" / "demo_kernel" / "__init__.py").write_text(
+            "def (:\n"
+        ),
+        "error",
+    ),
+    "tests": (lambda k: _rmtree(k / "tests"), "error"),
+    "card": (lambda k: (k / "README.md").unlink(), "warning"),
+    "aiter-code-submodule": (
+        lambda k: (k / ".gitmodules").write_text(AITER_SUBMODULE)
+        or (k / "third_party" / "aiter").mkdir(parents=True),
+        "error",
+    ),
+    "aiter-code-vendored": (
+        lambda k: (k / "third_party" / "aiter" / "aiter" / "jit").mkdir(parents=True),
+        "error",
+    ),
+    # Mentions in comments don't count: the code must call or mark.
+    "tests-kernels-ci-comment-only": (
+        lambda k: (k / "tests" / "test_demo.py").write_text(
+            TEST.replace("@pytest.mark.kernels_ci\n", "# kernels_ci: not marked\n")
+        ),
+        "error",
+    ),
+    "tests-get-kernel-comment-only": (
+        lambda k: (k / "tests" / "test_demo.py").write_text(
+            TEST.replace(
+                'demo = kernels.get_kernel("rocm-community/demo-kernel", version=1)',
+                '# demo = kernels.get_kernel("rocm-community/demo-kernel", version=1)\n'
+                "demo = None",
+            )
+        ),
+        "error",
+    ),
+}
+EXPECTED_CODE = {
+    "build-toml-unparseable": "build-toml",
+    "framework-two": "framework",
+    "aiter-code-submodule": "aiter-code",
+    "aiter-code-vendored": "aiter-code",
+    "tests-kernels-ci-comment-only": "tests-kernels-ci",
+    "tests-get-kernel-comment-only": "tests-get-kernel",
+}
+
+
+@pytest.mark.parametrize("case", sorted(BREAKAGES))
+def test_each_rule_catches_its_breakage(tmp_path, case):
+    breakage, level = BREAKAGES[case]
+    k = make_kernel(tmp_path)
+    breakage(k)
+    _, findings = check_wrapping.check_kernel(k, community=True)
+    code = EXPECTED_CODE.get(case, case)
+    assert code in codes(findings, level), sorted((f.level, f.code) for f in findings)
+
+
+def test_unsafe_directory_name(tmp_path):
+    _, f = check_wrapping.check_kernel(make_kernel(tmp_path, name="demo kernel"))
+    assert "name" in codes(f)
+
+
 def test_requires_rocm_backend(tmp_path):
     _, f = check_wrapping.check_kernel(
         make_kernel(tmp_path, toml=BUILD_TOML.replace('["rocm"]', '["cuda"]'))

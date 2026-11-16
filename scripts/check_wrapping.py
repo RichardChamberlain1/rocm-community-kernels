@@ -300,7 +300,24 @@ def _check_tests(tests: Path, package: str) -> list[Finding]:
         for p in sorted(tests.rglob("*.py"))
     }
     out = []
-    if not any("get_kernel" in t for t in texts.values()):
+    # Look at the code, not the text, so a comment or docstring mentioning
+    # get_kernel or kernels_ci doesn't count.
+    calls_get_kernel = marks_kernels_ci = False
+    for p, t in texts.items():
+        try:
+            tree = ast.parse(t, filename=str(p))
+        except SyntaxError as e:
+            out.append(Finding("error", "syntax", f"does not parse: {e}", str(p)))
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and (
+                getattr(node.func, "id", None) == "get_kernel"
+                or getattr(node.func, "attr", None) == "get_kernel"
+            ):
+                calls_get_kernel = True
+            elif isinstance(node, ast.Attribute) and node.attr == "kernels_ci":
+                marks_kernels_ci = True
+    if not calls_get_kernel:
         out.append(
             Finding(
                 "error",
@@ -309,7 +326,7 @@ def _check_tests(tests: Path, package: str) -> list[Finding]:
                 str(tests),
             )
         )
-    if not any("kernels_ci" in t for t in texts.values()):
+    if not marks_kernels_ci:
         out.append(
             Finding(
                 "error",
