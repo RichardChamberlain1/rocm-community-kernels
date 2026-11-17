@@ -7,7 +7,8 @@ happens after an approved publish:
   validate   check it is wrapped correctly for Hugging Face's kernel-builder
   build      nix build .#backendBundle.<backend> (all variants), check-abi;
              or --build-dir to use a prebuilt build/
-  test       nix build .#ci-test and run it on the AMD GPU (pytest -m kernels_ci)
+  test       nix build the ROCm 7.1 ci-test (.#ciTests.<variant>) and run it on
+             the AMD GPU (pytest -m kernels_ci)
   publish    EMULATED: copy the build into a local Hub (emulation/local_hub.py)
   verify     get_kernel() from the emulated Hub in a user-like Python env,
              then the kernel's own kernels_ci tests against that load

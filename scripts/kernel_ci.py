@@ -6,7 +6,9 @@
              --hf-rules-only), then kernel-builder check-config
   build      nix build .#backendBundle.<backend> (every variant; --ci for one
              representative variant), then kernel-builder check-abi
-  test       nix build .#ci-test and run it on the AMD GPU (pytest -m kernels_ci)
+  test       nix build the ci-test of the newest Torch with ROCm 7.1
+             (.#ciTests.<variant>; --ci-test-rocm) and run it on the AMD GPU
+             (pytest -m kernels_ci)
 
 The GitHub workflows run this script (kernel-ci.yml, rocm-build-test.yml),
 and contributors can run it the same way on a machine with Nix and an AMD GPU:
@@ -23,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -42,6 +45,20 @@ STAGES = ["validate", "build", "test"]
 KERNEL_BUILDER = ["nix", "run", "-L", "github:huggingface/kernels#kernel-builder", "--"]
 SECRETS = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HF_HUB_TOKEN")
 BUILD_CONCURRENCY = REPO_ROOT / "build-concurrency.json"
+# Hugging Face's binary cache holds the PyTorch x ROCm toolchains kernel-builder uses;
+# without it Nix builds them from source. The workflows add it with cachix-action
+# (kernel-ci.yml); a local machine or the GPU runner needs it in its Nix config.
+HF_CACHE = "huggingface.cachix.org"
+HF_CACHE_HINT = (
+    "run `nix run nixpkgs#cachix -- use huggingface`, "
+    "or install Nix with Hugging Face's kernels install.sh"
+)
+# Derivations that mean a toolchain is built from source: a cache miss costing hours.
+TOOLCHAIN = re.compile(r"llvm|clang|rocm-clr|(?:^|-)torch-\d")
+# The ROCm version the GPU test is built against. Kernel-builder's own `.#ci-test` is
+# the newest Torch with its lowest ROCm (ROCm 7.14 at torch-2.15.0-final), whose
+# toolchain isn't in the binary cache; the ROCm 7.1 one is.
+CI_TEST_ROCM = "7.1"
 
 
 @dataclass
@@ -112,12 +129,126 @@ class Runner:
 
 def detect() -> dict:
     kfd = Path("/dev/kfd")
+    nix = shutil.which("nix") is not None
     return {
-        "nix": shutil.which("nix") is not None,
+        "nix": nix,
+        "hf_cache": nix_uses_hf_cache() if nix else None,
         "gpu": kfd.exists() and os.access(kfd, os.R_OK | os.W_OK),
         "rocminfo": shutil.which("rocminfo") is not None,
         "host": os.uname().nodename,
     }
+
+
+def nix_uses_hf_cache() -> bool | None:
+    """Whether Nix fetches from Hugging Face's binary cache (None: can't tell)."""
+    for cmd in (["nix", "config", "show", "--json"], ["nix", "show-config", "--json"]):
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if r.returncode == 0:
+            try:
+                return has_hf_cache(json.loads(r.stdout))
+            except (ValueError, AttributeError, TypeError):
+                return None
+    return None
+
+
+def has_hf_cache(config: dict) -> bool:
+    """`nix config show --json` lists the cache as a substituter, and trusts its key."""
+    substituters = config.get("substituters", {}).get("value", [])
+    keys = config.get("trusted-public-keys", {}).get("value", [])
+    return any(HF_CACHE in s for s in substituters) and any(
+        k.startswith(f"{HF_CACHE}-") for k in keys
+    )
+
+
+def cache_check(ctx) -> StageResult | None:
+    """A failure if Nix would build without Hugging Face's binary cache."""
+    if ctx.dry_run or getattr(ctx.args, "no_hf_cache_check", False):
+        return None
+    if ctx.env.get("hf_cache") is False:
+        return StageResult(
+            "fail",
+            message=f"Nix doesn't use Hugging Face's binary cache ({HF_CACHE}): "
+            f"{HF_CACHE_HINT}; --no-hf-cache-check to build anyway",
+        )
+    return None
+
+
+def source_builds(output: str) -> list[str]:
+    """The derivations `nix build --dry-run` says it will build (not fetch), by name."""
+    names, inside = [], False
+    for ln in output.splitlines():
+        if not ln.startswith(" "):
+            inside = "will be built" in ln
+        elif inside and ln.strip():
+            names.append(re.sub(r"^/nix/store/[a-z0-9]+-|\.drv$", "", ln.strip()))
+    return names
+
+
+def toolchain_builds(ctx, attr: str, kr: KernelRun, log: Path) -> list[str]:
+    """Toolchain derivations that building `attr` would compile from source."""
+    if ctx.dry_run:
+        return []
+    cmd = ["nix", "build", "--dry-run", attr]
+    r = subprocess.run(
+        cmd, cwd=kr.kernel_dir, env=env_for(True), capture_output=True, text=True
+    )
+    with log.open("a") as f:
+        f.write(f"$ (cd {shlex.quote(str(kr.kernel_dir))} && {shlex.join(cmd)})\n")
+        f.write(r.stderr + r.stdout)
+    heavy = [n for n in source_builds(r.stderr + r.stdout) if TOOLCHAIN.search(n)]
+    if heavy:
+        print(
+            f"    WARNING {attr}: {len(heavy)} toolchain derivation(s) not in the "
+            f"binary cache, built from source (hours): {', '.join(heavy[:5])}"
+            + (", ..." if len(heavy) > 5 else ""),
+            flush=True,
+        )
+    return heavy
+
+
+def pick_ci_test(variants: list[str], rocm: str) -> str | None:
+    """The variant with the newest Torch built against ROCm `rocm` (e.g. "7.1")."""
+    tag = f"-rocm{rocm.replace('.', '')}-"
+
+    def torch(v: str) -> tuple[int, int]:
+        m = re.match(r"torch(\d)(\d+)-", v)
+        return (int(m[1]), int(m[2]))
+
+    found = [v for v in variants if tag in v and re.match(r"torch\d\d+-", v)]
+    return max(found, key=torch, default=None)
+
+
+def ci_test_attr(ctx, kr: KernelRun, log: Path) -> str:
+    """The ci-test to build: `.#ciTests.<variant>` for --ci-test-rocm, else `.#ci-test`."""
+    rocm = ctx.args.ci_test_rocm
+    if not rocm:
+        return ".#ci-test"
+    if ctx.dry_run:
+        return f".#ciTests.<newest Torch with ROCm {rocm}>"
+    cmd = ["nix", "eval", "--json", ".#ciTests", "--apply", "builtins.attrNames"]
+    r = subprocess.run(
+        cmd, cwd=kr.kernel_dir, env=env_for(True), capture_output=True, text=True
+    )
+    with log.open("a") as f:
+        f.write(f"$ (cd {shlex.quote(str(kr.kernel_dir))} && {shlex.join(cmd)})\n")
+        f.write(r.stderr + r.stdout)
+    try:
+        variant = (
+            pick_ci_test(json.loads(r.stdout), rocm) if r.returncode == 0 else None
+        )
+    except ValueError:
+        variant = None
+    if variant:
+        return f".#ciTests.{variant}"
+    print(
+        f"    WARNING no ci-test variant with ROCm {rocm}; "
+        "using kernel-builder's default .#ci-test",
+        flush=True,
+    )
+    return ".#ci-test"
 
 
 def git_sha(path: Path) -> str | None:
@@ -213,11 +344,15 @@ def stage_build(ctx, kr: KernelRun) -> StageResult:
     build = kr.out / "build"
     if not ctx.env["nix"] and not ctx.dry_run:
         return StageResult("skip", message="nix not found")
+    if res := cache_check(ctx):
+        return res
     backends = kr.entry.get("backends", ["rocm"])
     target = "backendCi" if ctx.args.ci else "backendBundle"
     log = kr.out / "build.log"
+    heavy = []
     for b in backends:
         link = kr.out / f"result-{b}"
+        heavy += toolchain_builds(ctx, f".#{target}.{b}", kr, log)
         rc, _ = ctx.run(
             [
                 "nix",
@@ -238,6 +373,8 @@ def stage_build(ctx, kr: KernelRun) -> StageResult:
         if not ctx.dry_run:
             shutil.copytree(link, build, symlinks=False, dirs_exist_ok=True)
     details = {"target": target, "backends": backends}
+    if heavy:
+        details["toolchain_from_source"] = heavy
     if kr.info and kr.info.framework != "torch-noarch":
         rc, _ = ctx.run(
             [*KERNEL_BUILDER, "check-abi", kr.kernel_dir], log, cwd=kr.kernel_dir
@@ -256,9 +393,10 @@ def stage_build(ctx, kr: KernelRun) -> StageResult:
         return StageResult(
             "fail", message="the build has no variants (no <variant>/metadata.json)"
         )
-    return StageResult(
-        "pass", message=f"{len(details['variants'])} variant(s)", details=details
-    )
+    message = f"{len(details['variants'])} variant(s)"
+    if heavy:
+        message += f"; {len(heavy)} toolchain derivation(s) built from source"
+    return StageResult("pass", message=message, details=details)
 
 
 def stage_test(ctx, kr: KernelRun) -> StageResult:
@@ -271,19 +409,26 @@ def stage_test(ctx, kr: KernelRun) -> StageResult:
             "skip",
             message="no usable /dev/kfd (no AMD GPU, or no permission); --force-gpu to try anyway",
         )
+    if res := cache_check(ctx):
+        return res
     log = kr.out / "test.log"
     link = kr.out / "ci-test"
+    attr = ci_test_attr(ctx, kr, log)
+    heavy = toolchain_builds(ctx, attr, kr, log)
     rc, _ = ctx.run(
-        ["nix", "build", "-L", ".#ci-test", "--out-link", link], log, cwd=kr.kernel_dir
+        ["nix", "build", "-L", attr, "--out-link", link], log, cwd=kr.kernel_dir
     )
     if rc:
-        return StageResult("fail", message="nix build .#ci-test failed (see test.log)")
+        return StageResult("fail", message=f"nix build {attr} failed (see test.log)")
     rc, _ = ctx.run([link / "bin" / "ci-test"], log, cwd=kr.kernel_dir)
     status = "dry-run" if ctx.dry_run else ("pass" if rc == 0 else "fail")
+    details = {"ci_test": attr, "gpu": gpu_info()}
+    if heavy:
+        details["toolchain_from_source"] = heavy
     return StageResult(
         status,
         message="" if rc == 0 else "ci-test failed (see test.log)",
-        details={"gpu": gpu_info()},
+        details=details,
     )
 
 
@@ -531,6 +676,18 @@ def add_run_args(r: argparse.ArgumentParser, all_stages: list[str]) -> None:
         "--force-gpu",
         action="store_true",
         help="run the GPU test stage even if /dev/kfd looks unusable",
+    )
+    r.add_argument(
+        "--ci-test-rocm",
+        default=CI_TEST_ROCM,
+        help="run the GPU test built for the newest Torch with this ROCm version "
+        f"(default {CI_TEST_ROCM}, whose toolchain is in the binary cache); "
+        "'' for kernel-builder's own .#ci-test",
+    )
+    r.add_argument(
+        "--no-hf-cache-check",
+        action="store_true",
+        help=f"build even if Nix doesn't use Hugging Face's binary cache ({HF_CACHE})",
     )
     r.add_argument(
         "--fail-on-skip",

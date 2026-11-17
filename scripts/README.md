@@ -21,8 +21,12 @@ Runs three stages per kernel:
 1. **build**: `nix build .#backendCi.rocm` (one representative variant, `--ci`) or
    `.#backendBundle.rocm` (every variant), then `kernel-builder check-abi` for compiled
    kernels. Memory-heavy kernels get Nix job limits from `build-concurrency.json`.
-1. **test**: builds `.#ci-test` and runs it on the AMD GPU, which runs the kernel's
-   `kernels_ci` tests.
+1. **test**: builds the GPU test for the newest Torch with ROCm 7.1
+   (`.#ciTests.<variant>`, e.g. `torch213-rocm71-x86_64-linux`) and runs it on the AMD
+   GPU, which runs the kernel's `kernels_ci` tests. Kernel-builder's own `.#ci-test`
+   picks ROCm 7.14, whose toolchain isn't in Hugging Face's binary cache.
+   `--ci-test-rocm` picks another ROCm version; `--ci-test-rocm ''` uses `.#ci-test`.
+   A kernel with no ROCm 7.1 variant falls back to `.#ci-test`, with a warning.
 
 Writes `summary.md` and `summary.json`, and per kernel `findings.json`, logs and the
 build, to `ci-out/<run-id>/`.
@@ -31,6 +35,11 @@ build, to `ci-out/<run-id>/`.
   doesn't target) fail instead of skip. The workflows use it, so a gate never passes
   without running.
 - Commands never get a Hugging Face token: the GPU runner runs pull request code.
+- `build` and `test` need Nix to use Hugging Face's binary cache
+  (`nix run nixpkgs#cachix -- use huggingface`). They fail early without it
+  (`--no-hf-cache-check` overrides this). They warn, before building, about toolchain
+  derivations (LLVM, clang, rocm-clr, PyTorch) missing from the cache, which Nix would
+  compile from source, and list them in `summary.json` under `toolchain_from_source`.
 
 ```bash
 python3 scripts/kernel_ci.py run --kernel <kernel> --ci          # Nix and an AMD GPU

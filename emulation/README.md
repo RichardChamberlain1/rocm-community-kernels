@@ -18,7 +18,7 @@ against the real one.
 | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- | ---------------------- |
 | `validate`  | `scripts/check_wrapping.py` (+ `kernel-builder check-config` with Nix)                                                                                                      | the kernel is wrapped correctly for Hugging Face's build logic | `scripts/kernel_ci.py` |
 | `build`     | `nix build .#backendBundle.<backend>` (all variants; `--ci` for one), then `kernel-builder check-abi`; or `--build-dir` for a prebuilt build                                | it builds with kernel-builder                                  | `scripts/kernel_ci.py` |
-| `test`      | `nix build .#ci-test`, then `ci-test` on the AMD GPU (`pytest -m kernels_ci` with `LOCAL_KERNELS`)                                                                          | it works on the hardware                                       | `scripts/kernel_ci.py` |
+| `test`      | `nix build .#ciTests.<newest Torch with ROCm 7.1>`, then `ci-test` on the AMD GPU (`pytest -m kernels_ci` with `LOCAL_KERNELS`)                                             | it works on the hardware                                       | `scripts/kernel_ci.py` |
 | `publish`   | **emulated**: `emulation/local_hub.py` copies `build/` into `<out>/hub`, branch `v<version>` (and `main` for version 1)                                                     | what would be uploaded                                         | emulation              |
 | `verify`    | `scripts/ci_verify_load.py` in a user-like Python env: `get_kernel()` from the emulated Hub (`HF_HUB_OFFLINE=1`, `KERNELS_CACHE`), then the kernel's own `kernels_ci` tests | users can load and use the published kernel                    | emulation              |
 | `benchmark` | times the `Benchmark` classes in `benchmarks/benchmark.py` from the emulated Hub; optional baseline comparison                                                              | performance, recorded in `perf.json`                           | emulation              |
@@ -70,6 +70,16 @@ python emulation/ci_emulate.py run --baseline ci-out/<earlier-run>/<kernel>/perf
 `--python` is the user-like environment for `verify` and `benchmark`: PyTorch for ROCm
 plus `pip install kernels pytest`, no Nix. It defaults to the interpreter running the
 script.
+
+Nix must use Hugging Face's binary cache, as the workflows do with `cachix-action`.
+Without it, Nix builds every PyTorch × ROCm toolchain from source. Hugging Face's
+`install.sh` sets the cache up; on a Nix you installed yourself, run
+`nix run nixpkgs#cachix -- use huggingface`. On a Nix without a daemon, add
+`extra-substituters = https://huggingface.cachix.org` and the matching
+`extra-trusted-public-keys` to `/etc/nix/nix.custom.conf` (or `nix.conf`). `build` and
+`test` fail early when the cache isn't configured (`--no-hf-cache-check` overrides
+this). They also warn, before building, about any toolchain derivation (LLVM, clang,
+rocm-clr, PyTorch) that the cache doesn't have and Nix will compile.
 
 For just the pull request stages, as CI runs them, use `scripts/kernel_ci.py` directly:
 
@@ -155,5 +165,12 @@ approval, in a job that runs no kernel code.
 - How the Nix `ci-test` reaches the ROCm driver. CUDA jobs symlink `libcuda` into
   `/run/opengl-driver/lib`; whether ROCm needs an equivalent is untested.
 - The exact variants `.#backendBundle.rocm` produces (`summary.md` lists them).
+- What the binary cache covers. At kernel-builder `torch-2.15.0-final`, Hugging Face's
+  cache has the ROCm build toolchain only for the ROCm 7.1 variants. Every ROCm 7.0, 7.2,
+  7.14 and 10.0 variant compiles LLVM from source, Hugging Face's own `relu` included.
+  Triton (`torch-noarch`) kernels don't compile it. The `test` stage therefore builds the
+  ROCm 7.1 GPU test (`--ci-test-rocm`), not kernel-builder's `.#ci-test`, which is ROCm
+  7.14. `backendCi.rocm` (`--ci`) is still ROCm 7.14, so a compiled kernel takes hours
+  there, as does `backendBundle.rocm`, which builds every variant.
 - `benchmark` uses its own timing loop over the `Benchmark` class rather than
   `kernels benchmark`, so its numbers can differ from Hugging Face's benchmark pages.

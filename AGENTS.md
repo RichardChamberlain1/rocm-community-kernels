@@ -62,7 +62,8 @@ my_kernel = kernels.get_kernel("rocm-community/my-kernel", version=1)
 In CI, `LOCAL_KERNELS` points `get_kernel()` at the fresh build, so the tests exercise
 the loader, variant selection and the package as published. Mark a fast subset (under
 a minute in total) with `@pytest.mark.kernels_ci`; that subset is what
-`nix run .#ci-test` runs on the GPU. In this repository test files are named
+the GPU test runs (`nix run .#ciTests.<variant>`, or `.#ci-test` for kernel-builder's
+default variant). In this repository test files are named
 `*_test.py`.
 
 ## Kernel versions

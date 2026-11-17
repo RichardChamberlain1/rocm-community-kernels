@@ -70,6 +70,85 @@ def test_concurrency_args(tmp_path, monkeypatch):
     assert kernel_ci.concurrency_args("small", "rocm") == []
 
 
+def test_hf_cache_detection():
+    key = "huggingface.cachix.org-1:<public key>"
+    nixos = ["https://cache.nixos.org/"]
+
+    def config(substituters, keys):
+        return {
+            "substituters": {"value": substituters},
+            "trusted-public-keys": {"value": keys},
+        }
+
+    assert kernel_ci.has_hf_cache(
+        config([*nixos, "https://huggingface.cachix.org"], [key])
+    )
+    assert not kernel_ci.has_hf_cache(config(nixos, []))
+    # the key alone doesn't make Nix fetch from it, nor the URL without a trusted key
+    assert not kernel_ci.has_hf_cache(config(nixos, [key]))
+    assert not kernel_ci.has_hf_cache(
+        config(["https://huggingface.cachix.org"], ["cache.nixos.org-1:x"])
+    )
+    assert not kernel_ci.has_hf_cache({})
+
+
+def test_missing_hf_cache_fails_before_building(tmp_path):
+    def ctx(hf_cache, **args):
+        return SimpleNamespace(
+            dry_run=False,
+            env={"nix": True, "hf_cache": hf_cache},
+            args=SimpleNamespace(ci=True, no_hf_cache_check=False, **args),
+        )
+
+    res = kernel_ci.stage_build(ctx(False), kernel([]))
+    assert res.status == "fail" and "cachix -- use huggingface" in res.message
+    # Nix couldn't say, or the user opted out: don't block
+    assert kernel_ci.cache_check(ctx(None)) is None
+    opted_out = ctx(False)
+    opted_out.args.no_hf_cache_check = True
+    assert kernel_ci.cache_check(opted_out) is None
+
+
+def test_source_builds_from_nix_dry_run():
+    out = """\
+these 3 derivations will be built:
+  /nix/store/0a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p-rocm-llvm-7.14.0.drv
+  /nix/store/1a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p-python3.13-torch-2.10.0.drv
+  /nix/store/2a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p-sage-attention-torch-ext.drv
+these 2 paths will be fetched (1.20 GiB download, 6.00 GiB unpacked):
+  /nix/store/3a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p-rocm-clr-7.1.1
+  /nix/store/4a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p-clang-19.1.0
+"""
+    names = kernel_ci.source_builds(out)
+    assert names == [
+        "rocm-llvm-7.14.0",
+        "python3.13-torch-2.10.0",
+        "sage-attention-torch-ext",
+    ]
+    # fetched paths and the kernel's own derivation aren't toolchain builds
+    assert [n for n in names if kernel_ci.TOOLCHAIN.search(n)] == names[:2]
+    assert (
+        kernel_ci.source_builds("this path will be fetched:\n  /nix/store/x-a\n") == []
+    )
+
+
+def test_ci_test_uses_the_newest_torch_for_the_rocm_version():
+    variants = [
+        "torch29-rocm71-x86_64-linux",
+        "torch210-rocm70-x86_64-linux",
+        "torch210-rocm71-x86_64-linux",
+        "torch213-rocm71-x86_64-linux",
+        "torch214-rocm714-x86_64-linux",
+        "torch215-rocm714-x86_64-linux",
+        "torch215-rocm100-x86_64-linux",
+    ]
+    assert kernel_ci.pick_ci_test(variants, "7.1") == "torch213-rocm71-x86_64-linux"
+    # rocm71 must not match rocm714
+    assert kernel_ci.pick_ci_test(variants, "7.14") == "torch215-rocm714-x86_64-linux"
+    assert kernel_ci.pick_ci_test(variants, "7.2") is None
+    assert kernel_ci.pick_ci_test([], "7.1") is None
+
+
 def test_expectations():
     R = kernel_ci.StageResult
     ok = kernel([], {"validate": "fail"}, {"validate": R("fail"), "build": R("pass")})

@@ -9,7 +9,8 @@
 # with --fail-on-skip so that a missing GPU, missing Nix or a GPU the kernel
 # doesn't target fails the gate instead of skipping it.
 #
-# Runner: a self-hosted MI350 (gfx950) with Nix installed and /dev/kfd and
+# Runner: a self-hosted MI350 (gfx950) with Nix installed, set up to use Hugging
+# Face's binary cache (kernel_ci.py fails the build without it), and /dev/kfd and
 # /dev/dri usable by the runner user; see docs/poc/goal1.md. No job here gets
 # secrets, because pull request code runs on it.
 
@@ -79,7 +80,8 @@ jobs:
           fi
 
       # validate (wrapping and community rules, kernel-builder check-config),
-      # build (nix build, check-abi), test (nix build .#ci-test, run it on the GPU).
+      # build (nix build, check-abi), test (nix build the ROCm 7.1 .#ciTests.<variant>,
+      # run it on the GPU).
       - name: Build and test
         env:
           KERNEL: ${{ inputs.kernel }}
