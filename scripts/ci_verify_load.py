@@ -5,7 +5,9 @@ Runs inside a user-like Python environment (PyTorch for ROCm plus the
 
 * the Hub: KERNELS_CACHE for a clean download cache, and --trust-remote-code
   for organisations that aren't trusted publishers;
-* an existing cache only: HF_HUB_OFFLINE=1 and KERNELS_CACHE=<cache directory>.
+* an existing cache only: HF_HUB_OFFLINE=1 and KERNELS_CACHE=<cache directory>,
+  for example one scripts/ci_download.py filled from a private repository. This
+  script runs kernel code, so it never needs a token.
 
 Checks that the module came from where it should (--expect-under), records the
 build variant the loader chose and any loader warnings (digest, signature),

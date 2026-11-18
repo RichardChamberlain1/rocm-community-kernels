@@ -1,6 +1,7 @@
 """Tests for the helpers the GitHub workflows call: changed kernels, maintainers, publish target."""
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -120,3 +121,20 @@ def test_publish_target_rejects(tmp_path, kernel, org, branch):
     add_kernel(tmp_path, "alpha")
     with pytest.raises(ValueError):
         publish_target.target(tmp_path, kernel, org, branch)
+
+
+def test_every_workflow_upload_is_private():
+    """kernel-builder creates public repositories unless told otherwise."""
+    workflows = Path(__file__).resolve().parents[2] / ".github" / "workflows"
+    uploads = []
+    for wf in sorted(workflows.glob("*.yml")):
+        # Join shell continuation lines, so each command is one line.
+        text = re.sub(r"\\\n\s*", " ", wf.read_text())
+        uploads += [
+            (wf.name, line)
+            for line in text.splitlines()
+            if re.search(r"kernel-builder\S*\s+--\s+upload\b", line)
+        ]
+    assert uploads, "no kernel-builder upload found in the workflows"
+    for name, line in uploads:
+        assert "--private" in line.split(), f"{name}: upload without --private: {line}"

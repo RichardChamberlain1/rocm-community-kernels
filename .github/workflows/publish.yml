@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: MIT
 #
 # Publishes one kernel to the Hugging Face Hub, on request. The jobs are split so
-# that the Hub token never shares a job with kernel code:
+# that the Hub write token never shares a job with kernel code, and no token is in
+# the environment of a step that runs kernel code:
 #
 #   target   resolve the upload target (scripts/publish_target.py): the
 #            organisation from the hub_org input or the HUB_ORG variable, the name
@@ -11,9 +12,13 @@
 #            on an MI350 (rocm-build-test.yml); no secrets
 #   upload   waits for approval in the hf-rocm-community environment (AMD
 #            maintainers), then signs each variant's metadata.json with cosign and
-#            runs `kernel-builder upload`; holds the Hub token, never runs kernel code
-#   verify   on a clean Python environment on the MI350: `get_kernel()` from the Hub,
-#            then the kernel's `kernels_ci` tests against that download
+#            runs `kernel-builder upload`; holds the Hub token, never runs kernel code.
+#            A repository the upload creates is private (`--private`; public is
+#            kernel-builder's default); an existing one keeps its visibility
+#   verify   on a clean Python environment on the MI350: one step downloads the
+#            kernel with a read-only token (HF_READ_TOKEN; scripts/ci_download.py,
+#            nothing is imported), then `get_kernel()` loads it offline from that
+#            download, with no token, and the kernel's `kernels_ci` tests run on it
 #
 # Only main is published: the workflow refuses other refs, and the environment
 # should allow deployments from main only (docs/poc/goal1.md).
@@ -153,12 +158,12 @@ jobs:
         run: |
           cd "$KERNEL"
           nix run -L github:huggingface/kernels#kernel-builder -- upload \
-            --repo-type kernel --repo-id "$REPO_ID" --branch "$BRANCH" \
+            --repo-type kernel --repo-id "$REPO_ID" --branch "$BRANCH" --private \
             --output-json "$RUNNER_TEMP/upload.json"
           # Version-1 kernels without an explicit branch also go to main.
           if [ "$ALSO_MAIN" = "true" ]; then
             nix run -L github:huggingface/kernels#kernel-builder -- upload \
-              --repo-type kernel --repo-id "$REPO_ID" --branch main \
+              --repo-type kernel --repo-id "$REPO_ID" --branch main --private \
               --output-json "$RUNNER_TEMP/upload-main.json"
           fi
 
@@ -187,7 +192,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      # What a user has: PyTorch for ROCm, `kernels` and pytest. No Nix, no build.
+      # What a user has: PyTorch for ROCm, `kernels` (with huggingface_hub) and pytest.
+      # No Nix, no build.
       - name: Create a clean user environment
         env:
           TORCH_INDEX_URL: ${{ vars.TORCH_INDEX_URL }}
@@ -203,7 +209,24 @@ jobs:
             "torch${TORCH_VERSION:+==$TORCH_VERSION}"
           "$RUNNER_TEMP/user-venv/bin/pip" install kernels pytest
 
-      - name: get_kernel() from the Hub, then the kernels_ci tests
+      # The only step with a token: read-only, and nothing from the kernel is imported.
+      # Repositories are private, so an anonymous download would be refused.
+      - name: Download the kernel from the Hub (read-only token)
+        env:
+          HF_TOKEN: ${{ secrets.HF_READ_TOKEN }}
+          HF_HOME: ${{ runner.temp }}/hf-home
+          REPO_ID: ${{ needs.target.outputs.repo-id }}
+          BRANCH: ${{ needs.target.outputs.branch }}
+          KERNELS_CACHE: ${{ runner.temp }}/kernels-cache
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo "::error::Set the HF_READ_TOKEN secret (a read-only Hugging Face token for the organisation)"
+            exit 1
+          fi
+          "$RUNNER_TEMP/user-venv/bin/python" scripts/ci_download.py \
+            --repo-id "$REPO_ID" --revision "$BRANCH" --json "$RUNNER_TEMP/download.json"
+
+      - name: get_kernel() from the download, then the kernels_ci tests (no token)
         env:
           REPO_ID: ${{ needs.target.outputs.repo-id }}
           SOURCE_REPO_ID: ${{ needs.target.outputs.source-repo-id }}
@@ -211,6 +234,8 @@ jobs:
           CONFIG_DIR: ${{ needs.target.outputs.config-dir }}
           TRUST_REMOTE_CODE: ${{ inputs.trust_remote_code }}
           KERNELS_CACHE: ${{ runner.temp }}/kernels-cache
+          HF_HOME: ${{ runner.temp }}/hf-home
+          HF_HUB_OFFLINE: "1"
         run: |
           read -ra load <<< "$LOAD_ARGS"
           args=(--repo-id "$REPO_ID" "${load[@]}" --json "$RUNNER_TEMP/verify.json")
@@ -242,6 +267,8 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: verify-${{ inputs.kernel }}
-          path: ${{ runner.temp }}/verify.json
+          path: |
+            ${{ runner.temp }}/download.json
+            ${{ runner.temp }}/verify.json
           if-no-files-found: ignore
           retention-days: 30

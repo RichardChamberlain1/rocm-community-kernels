@@ -9,17 +9,29 @@ happens after an approved publish:
              or --build-dir to use a prebuilt build/
   test       nix build the ROCm 7.1 ci-test (.#ciTests.<variant>) and run it on
              the AMD GPU (pytest -m kernels_ci)
-  publish    EMULATED: copy the build into a local Hub (emulation/local_hub.py)
-  verify     get_kernel() from the emulated Hub in a user-like Python env,
-             then the kernel's own kernels_ci tests against that load
-  benchmark  time benchmarks/benchmark.py from the emulated Hub (perf.json)
+  publish    by default EMULATED: copy the build into a local Hub
+             (emulation/local_hub.py); with --hub-org rocm-community-poc, a real,
+             private upload to the POC organisation (emulation/hub_publish.py)
+  verify     get_kernel() from the Hub in a user-like Python env, then the
+             kernel's own kernels_ci tests against that load
+  benchmark  time benchmarks/benchmark.py from the Hub (perf.json)
 
 for the kernels in a list (emulation/approved-kernels.toml by default, or
 emulation/test-kernels.toml) or given with --kernel, and writes
-ci-out/<run-id>/summary.{json,md}. Nothing is ever pushed to the Hugging Face
-Hub: no stage calls an upload, Hugging Face tokens are removed from every
-command's environment, and every stage after the self-test's download runs
-with HF_HUB_OFFLINE=1.
+ci-out/<run-id>/summary.{json,md}.
+
+Without --hub-org nothing is pushed to the Hugging Face Hub: no stage uploads,
+Hugging Face tokens are removed from every command's environment, and every
+stage after the self-test's download runs with HF_HUB_OFFLINE=1.
+
+With --hub-org rocm-community-poc (the only organisation accepted), a real run
+reads a token from HF_TOKEN and passes it to two kinds of command only, in
+their environment, never on the command line: `kernel-builder upload
+--private`, and scripts/ci_download.py, which downloads the kernel without
+loading it. After the upload the repository must be private, or publish fails.
+get_kernel() and the tests then run offline from that download, with no token,
+as publish.yml's verify job does. --dry-run reads no token and contacts no Hub.
+To delete POC repositories again, use emulation/hub_delete.py.
 
 `selftest` checks the emulation against a real Hub kernel: it downloads one
 (read-only), re-publishes the same files to the emulated Hub, and checks that
@@ -32,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 import tomllib
@@ -45,6 +58,7 @@ SCRIPTS = REPO_ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(EMULATION))
 
+import hub_publish  # noqa: E402
 import kernel_ci  # noqa: E402
 import local_hub  # noqa: E402
 from kernel_ci import (  # noqa: E402
@@ -59,6 +73,7 @@ from kernel_ci import (  # noqa: E402
 
 STAGES = kernel_ci.STAGES + ["publish", "verify", "benchmark"]
 VERIFY = SCRIPTS / "ci_verify_load.py"
+DOWNLOAD = SCRIPTS / "ci_download.py"
 DEFAULT_APPROVED = EMULATION / "approved-kernels.toml"
 RELU_SMOKE = "k.relu(torch.tensor([-2.0, -0.5, 0.0, 0.5, 2.0], device=device))"
 
@@ -121,12 +136,85 @@ def publish_branch(ctx, kr: KernelRun) -> str:
     return kr.entry.get("branch") or ctx.args.branch or f"v{kr.info.version}"
 
 
+def hub_target(ctx, kr: KernelRun) -> dict:
+    """Where the real publish goes: scripts/publish_target.py, as in publish.yml."""
+    branch = kr.entry.get("branch") or ctx.args.branch or ""
+    return hub_publish.target(kr.kernel_dir, ctx.hub_org, branch)
+
+
+def hub_env(ctx, *, offline: bool, token: bool = False, **extra: str) -> dict:
+    """env_for() with a fresh HF_HOME (no stored token); the token only if asked."""
+    env = env_for(offline, HF_HOME=str(ctx.out / "hf-home"), **extra)
+    if token and ctx.token:
+        env["HF_TOKEN"] = ctx.token
+    return env
+
+
+def publish_to_hub(ctx, kr: KernelRun, build: Path) -> StageResult:
+    """Upload privately to the POC organisation, then check the repo is private."""
+    t = hub_target(ctx, kr)
+    repo = t["repo-id"]
+    # Version-1 kernels without a branch override also go to main, as in publish.yml.
+    branches = [t["branch"]] + (["main"] if t["also-main"] == "true" else [])
+    if not ctx.dry_run and not build.is_dir():
+        return StageResult("skip", message="no build to publish")
+    log = kr.out / "publish.log"
+    if ctx.env["nix"] and (kr.kernel_dir / "CARD.md").is_file():
+        ctx.run(
+            [*KERNEL_BUILDER, "fill-card", kr.kernel_dir, build / "CARD.md"],
+            log,
+            cwd=kr.kernel_dir,
+        )
+    uploads = []
+    for branch in branches:
+        out = kr.out / f"hub-upload-{branch}.json"
+        rc, _ = ctx.run(
+            hub_publish.upload_cmd(build, repo, branch, out),
+            log,
+            cwd=kr.kernel_dir,
+            env=hub_env(ctx, offline=False, token=True),
+        )
+        if ctx.dry_run:
+            continue
+        if rc != 0:
+            return StageResult(
+                "fail", message=f"upload to {repo}@{branch} failed; see publish.log"
+            )
+        uploads.append(json.loads(out.read_text()) if out.is_file() else {})
+    if ctx.dry_run:
+        print(f"    [dry-run] check that {repo} is private")
+        return StageResult("dry-run")
+    private = hub_publish.is_private(repo, ctx.token)
+    record = {
+        "repo_id": repo,
+        "source_repo_id": t["source-repo-id"],
+        "branches": branches,
+        "private": private,
+        "signed": False,
+        "uploads": uploads,
+        "note": f"uploaded with kernel-builder upload --private to {hub_publish.ALLOWED_ORG}",
+    }
+    (kr.out / "upload.json").write_text(json.dumps(record, indent=2) + "\n")
+    if not private:
+        return StageResult(
+            "fail",
+            message=f"{repo} is NOT private: make it private now at "
+            f"{hub_publish.HUB}/kernels/{repo}/settings",
+            details=record,
+        )
+    return StageResult(
+        "pass", message=f"{repo}@{'/'.join(branches)} (private)", details=record
+    )
+
+
 def stage_publish(ctx, kr: KernelRun) -> StageResult:
     build = kr.out / "build"
     if (
         not build.is_dir() and ctx.args.build_dir
     ):  # build stage not run: publish the prebuilt directory
         build = ctx.args.build_dir.resolve()
+    if ctx.hub_org:
+        return publish_to_hub(ctx, kr, build)
     if ctx.dry_run:
         print(
             f"    [emulated] local_hub.push {kr.info.repo_id} -> {ctx.hub} branch {publish_branch(ctx, kr)}"
@@ -171,6 +259,60 @@ def _ref_args(ctx, kr: KernelRun) -> list[str]:
     )
 
 
+def load_source(
+    ctx, kr: KernelRun, log: Path
+) -> tuple[list, dict, StageResult | None]:
+    """ci_verify_load.py arguments and environment that load the published kernel.
+
+    Emulated Hub: read offline from it. Real Hub: download first with
+    scripts/ci_download.py, the only step that gets the token (nothing is
+    imported), then load offline from that cache with no token and
+    --trust-remote-code (the POC organisation isn't a trusted publisher). The
+    kernel's tests load build.toml's repo id; --tests-repo-id points it at the
+    download, as publish.yml does.
+    """
+    if not ctx.hub_org:
+        args = [
+            "--repo-id",
+            kr.info.repo_id,
+            *_ref_args(ctx, kr),
+            "--expect-under",
+            local_hub.repo_folder(ctx.hub, kr.info.repo_id),
+        ]
+        return args, env_for(True, KERNELS_CACHE=str(ctx.hub)), None
+    t = hub_target(ctx, kr)
+    cache = str(ctx.out / "kernels-cache")
+    rc, _ = ctx.run(
+        [
+            ctx.args.python,
+            DOWNLOAD,
+            "--repo-id",
+            t["repo-id"],
+            "--revision",
+            t["branch"],
+            "--json",
+            kr.out / "download.json",
+        ],
+        log,
+        cwd=ctx.out,
+        env=hub_env(ctx, offline=False, token=True, KERNELS_CACHE=cache),
+    )
+    if rc != 0 and not ctx.dry_run:
+        failed = f"download of {t['repo-id']}@{t['branch']} failed; see {log.name}"
+        return [], {}, StageResult("fail", message=failed)
+    args = [
+        "--repo-id",
+        t["repo-id"],
+        *t["load-args"].split(),
+        "--trust-remote-code",
+        "--tests-repo-id",
+        kr.info.repo_id,
+        "--expect-under",
+        local_hub.repo_folder(Path(cache), t["repo-id"]),
+    ]
+    return args, hub_env(ctx, offline=True, KERNELS_CACHE=cache), None
+
+
 def stage_verify(ctx, kr: KernelRun) -> StageResult:
     if why := arch_mismatch(ctx, kr):
         return StageResult("skip", message=why)
@@ -180,26 +322,15 @@ def stage_verify(ctx, kr: KernelRun) -> StageResult:
     ):
         return StageResult("skip", message="nothing published")
     report = kr.out / "verify.json"
+    log = kr.out / "verify.log"
     tests = Path(kr.info.config_dir) / "tests"
-    cmd = [
-        ctx.args.python,
-        VERIFY,
-        "--repo-id",
-        kr.info.repo_id,
-        *_ref_args(ctx, kr),
-        "--expect-under",
-        local_hub.repo_folder(ctx.hub, kr.info.repo_id),
-        "--json",
-        report,
-    ]
+    load_args, env, failed = load_source(ctx, kr, log)
+    if failed:
+        return failed
+    cmd = [ctx.args.python, VERIFY, *load_args, "--json", report]
     if tests.is_dir() and not ctx.args.no_tests:
         cmd += ["--tests", tests]
-    rc, secs = ctx.run(
-        cmd,
-        kr.out / "verify.log",
-        cwd=Path(kr.info.config_dir),
-        env=env_for(True, KERNELS_CACHE=str(ctx.hub)),
-    )
+    rc, secs = ctx.run(cmd, log, cwd=Path(kr.info.config_dir), env=env)
     if ctx.dry_run:
         return StageResult("dry-run")
     details = json.loads(report.read_text()) if report.is_file() else {}
@@ -237,14 +368,14 @@ def stage_benchmark(ctx, kr: KernelRun) -> StageResult:
     ):
         return StageResult("skip", message="nothing published")
     report = kr.out / "benchmark.json"
+    log = kr.out / "benchmark.log"
+    load_args, env, failed = load_source(ctx, kr, log)
+    if failed:
+        return failed
     cmd = [
         ctx.args.python,
         VERIFY,
-        "--repo-id",
-        kr.info.repo_id,
-        *_ref_args(ctx, kr),
-        "--expect-under",
-        local_hub.repo_folder(ctx.hub, kr.info.repo_id),
+        *load_args,
         "--benchmark",
         bench,
         "--iters",
@@ -252,12 +383,7 @@ def stage_benchmark(ctx, kr: KernelRun) -> StageResult:
         "--json",
         report,
     ]
-    rc, _ = ctx.run(
-        cmd,
-        kr.out / "benchmark.log",
-        cwd=Path(kr.info.config_dir),
-        env=env_for(True, KERNELS_CACHE=str(ctx.hub)),
-    )
+    rc, _ = ctx.run(cmd, log, cwd=Path(kr.info.config_dir), env=env)
     if ctx.dry_run:
         return StageResult("dry-run")
     data = json.loads(report.read_text()) if report.is_file() else {}
@@ -338,9 +464,65 @@ class Ctx(kernel_ci.Ctx):
     def __init__(self, args):
         super().__init__(args)
         self.hub = (args.hub or self.out / "hub").resolve()
+        self.hub_org = getattr(args, "hub_org", None)
+        # Read only for a real run against the Hub; a dry run never needs it.
+        self.token = (
+            os.environ.get("HF_TOKEN") if self.hub_org and not self.dry_run else None
+        )
+
+
+TOKEN_HELP = (
+    "set HF_TOKEN to a fine-grained token with write access to "
+    f"{hub_publish.ALLOWED_ORG}, without saving it: read -rs HF_TOKEN && export HF_TOKEN"
+)
+
+
+def check_hub_org(args) -> None:
+    """Stop early unless --hub-org is the POC org and a real run has a token."""
+    if args.hub_org is None:
+        return
+    if args.hub_org != hub_publish.ALLOWED_ORG:
+        sys.exit(
+            f"refusing --hub-org {args.hub_org!r}: the emulation only publishes to "
+            f"{hub_publish.ALLOWED_ORG}"
+        )
+    if not args.dry_run and not os.environ.get("HF_TOKEN"):
+        sys.exit(f"--hub-org needs a token: {TOKEN_HELP}")
+
+
+def publish_note(ctx, runs, stages) -> str:
+    """What a --hub-org run actually did, from the publish stage results."""
+    org = ctx.hub_org
+    if ctx.dry_run:
+        return f"Dry run for `{org}` on the Hugging Face Hub: nothing was sent."
+    if "publish" not in stages:
+        return f"Publish was not run, so nothing was sent to `{org}`."
+    published, failed, skipped = [], [], []
+    for kr in runs:
+        res = kr.results.get("publish")
+        status = res.status if res else "skip"
+        detail = f"{kr.name} ({res.message})" if res and res.message else kr.name
+        if status == "pass":
+            published.append(kr.name)
+        elif status == "fail":
+            failed.append(detail)
+        else:
+            skipped.append(detail)
+    parts = []
+    if published:
+        parts.append(
+            "Published privately to "
+            f"`{org}` on the Hugging Face Hub: {', '.join(published)}."
+        )
+    if failed:
+        parts.append(f"Publish failed: {', '.join(failed)}.")
+    if skipped:
+        parts.append(f"Nothing published: {', '.join(skipped)}.")
+    return " ".join(parts) if parts else f"Nothing was sent to `{org}`."
 
 
 def cmd_run(args) -> int:
+    check_hub_org(args)
     ctx = Ctx(args)
     stages = kernel_ci.select_stages(args, STAGES)
     entries = load_entries(args)
@@ -351,17 +533,28 @@ def cmd_run(args) -> int:
         return 0
     if args.build_dir and len(entries) != 1:
         sys.exit("--build-dir needs exactly one kernel")
-    print(f"emulated hub {ctx.hub}")
+    if ctx.hub_org:
+        if ctx.dry_run:
+            print(f"dry run for {ctx.hub_org}: nothing will be sent")
+        else:
+            print(f"publish target: {ctx.hub_org} (private upload)")
+    else:
+        print(f"emulated hub {ctx.hub}")
     runs = kernel_ci.run_kernels(ctx, entries, stages, STAGE_FUNCS)
+    if ctx.hub_org:
+        note = publish_note(ctx, runs, stages)
+    else:
+        note = f"Emulated Hub: `{ctx.hub}` (nothing was pushed to the Hugging Face Hub)."
     return kernel_ci.write_report(
         ctx,
         runs,
         stages,
         title="CI emulation",
-        notes=[
-            f"Emulated Hub: `{ctx.hub}` (nothing was pushed to the Hugging Face Hub)."
-        ],
-        extra={"emulated_hub": str(ctx.hub)},
+        notes=[note],
+        extra={
+            "emulated_hub": None if ctx.hub_org else str(ctx.hub),
+            "hub_org": ctx.hub_org,
+        },
     )
 
 
@@ -509,6 +702,11 @@ def parse_args(argv=None):
     )
     r.add_argument(
         "--branch", help="publish to this branch instead of v<version> (e.g. staging)"
+    )
+    r.add_argument(
+        "--hub-org",
+        help=f"publish for real, privately, to this Hub organisation (only "
+        f"{hub_publish.ALLOWED_ORG}); needs HF_TOKEN unless --dry-run",
     )
     r.add_argument(
         "--no-tests",

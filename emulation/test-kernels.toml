@@ -1,18 +1,13 @@
 # Test kernels for the CI emulation, all under emulation/kernels/. They are test material,
-# never published, and removed together with emulation/.
+# removed together with emulation/.
 #
 #   python emulation/ci_emulate.py run --approved emulation/test-kernels.toml
 #
-# Two kinds:
-#
-# - Three of AMD's existing amd/* Hub kernels, copied as published (only aiter-rope's README
-#   and docstrings were reworded, and test files renamed to *_test.py). They exercise the CI
-#   on real kernels, but they are not community kernels: `rules = "hf"` applies Hugging
-#   Face's packaging rules only, since the community rules reserve the aiter- prefix and
-#   amd/* for AMD. Left out: the Composable Kernel package and the aiter-kernels bundle.
-# - Fixtures made from the add-community-kernel skill's templates (the `scale` example, not
-#   performance-tuned). They run with the community rules from ci/community.toml:
-#   scale-triton and scale-hip must pass them, bad-community must be stopped by them.
+# Fixtures made from the add-community-kernel skill's templates (the `scale` example, not
+# performance-tuned). They run with the community rules from ci/community.toml:
+# scale-triton and scale-hip must pass them, bad-community must be stopped by them. With
+# --hub-org rocm-community-poc, the two that pass are published, privately, to the POC
+# organisation; bad-community never gets past validate.
 #
 # Per-kernel keys, in addition to those in approved-kernels.toml:
 #   rules      = "hf" | "community"                      # default: community
@@ -24,20 +19,6 @@
 
 # Relative to this file; override with --kernels-root.
 kernels_root = "kernels"
-
-[[kernel]]
-path = "aiter-flash-attn"        # amd/aiter-flash-attn, version 2: Triton attention (noarch)
-rules = "hf"
-expect = { validate = "fail" }   # no test is marked kernels_ci
-keep_going = true                # still build, publish and load it
-
-[[kernel]]
-path = "aiter-sage-attention"    # amd/aiter-sage-attention, version 1: compiled HIP, gfx1201 only
-rules = "hf"
-
-[[kernel]]
-path = "aiter-rope"              # amd/aiter-rope, version 3: Triton RoPE (noarch, legacy)
-rules = "hf"
 
 [[kernel]]
 path = "scale-triton"            # rocm-community/scale-triton: fixture, Triton (noarch)

@@ -34,14 +34,10 @@ def community(case) -> bool:
     return case.get("rules", "community") == "community"
 
 
-def test_list_excludes_composable_kernel_and_bundle():
-    assert all(
-        "-ck" not in case["path"] and case["path"] != "aiter-kernels" for case in CASES
-    )
-
-
-def test_list_covers_both_rule_sets():
-    assert any(community(c) for c in CASES) and not all(community(c) for c in CASES)
+def test_list_holds_only_community_fixtures():
+    """No AMD kernels in the POC: every test kernel is checked with the community rules."""
+    assert all(community(c) for c in CASES)
+    assert not any(c["path"].startswith("aiter") for c in CASES)
 
 
 @pytest.mark.parametrize("case", CASES, ids=[c["path"] for c in CASES])
@@ -53,27 +49,14 @@ def test_wrapping_matches_expectation(case):
     expected = case.get("expect", {}).get("validate", "pass")
     assert (not errors) == (expected == "pass"), [f.message for f in errors]
     assert info.version is not None
-    if community(case) and expected == "pass":
+    if expected == "pass":
         assert info.repo_id == f"rocm-community/{case['path']}"
-    elif not community(case):
-        assert info.repo_id.startswith("amd/")
 
 
 def test_bad_community_fails_for_the_planted_reasons():
     _, findings = check_wrapping.check_kernel(ROOT / "bad-community", community=True)
     errors = {f.code for f in findings if f.level == "error"}
     assert errors == {"reserved-org", "card-notice", "tests-kernels-ci"}
-
-
-def test_amd_kernels_fail_the_community_rules():
-    """The aiter kernels use names and orgs the community rules reserve for AMD."""
-    for case in CASES:
-        if not community(case):
-            _, findings = check_wrapping.check_kernel(
-                ROOT / case["path"], community=True
-            )
-            errors = {f.code for f in findings if f.level == "error"}
-            assert {"reserved-name", "reserved-org"} <= errors, case["path"]
 
 
 def test_dry_run_of_the_list(tmp_path):
