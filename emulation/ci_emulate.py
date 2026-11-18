@@ -259,9 +259,7 @@ def _ref_args(ctx, kr: KernelRun) -> list[str]:
     )
 
 
-def load_source(
-    ctx, kr: KernelRun, log: Path
-) -> tuple[list, dict, StageResult | None]:
+def load_source(ctx, kr: KernelRun, log: Path) -> tuple[list, dict, StageResult | None]:
     """ci_verify_load.py arguments and environment that load the published kernel.
 
     Emulated Hub: read offline from it. Real Hub: download first with
@@ -544,7 +542,9 @@ def cmd_run(args) -> int:
     if ctx.hub_org:
         note = publish_note(ctx, runs, stages)
     else:
-        note = f"Emulated Hub: `{ctx.hub}` (nothing was pushed to the Hugging Face Hub)."
+        note = (
+            f"Emulated Hub: `{ctx.hub}` (nothing was pushed to the Hugging Face Hub)."
+        )
     return kernel_ci.write_report(
         ctx,
         runs,
