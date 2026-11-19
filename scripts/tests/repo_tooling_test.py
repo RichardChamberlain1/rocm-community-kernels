@@ -138,3 +138,31 @@ def test_every_workflow_upload_is_private():
     assert uploads, "no kernel-builder upload found in the workflows"
     for name, line in uploads:
         assert "--private" in line.split(), f"{name}: upload without --private: {line}"
+
+
+def job_blocks(text: str) -> dict[str, str]:
+    """Each job's YAML text, by job id (jobs are indented two spaces under `jobs:`)."""
+    body = text.split("\njobs:\n", 1)[-1]
+    parts = re.split(r"^  ([A-Za-z0-9_-]+):\n", body, flags=re.M)
+    return dict(zip(parts[1::2], parts[2::2]))
+
+
+def test_gpu_jobs_run_in_the_ci_image():
+    """Jobs on the gfx950 runners run in a CI image, with the GPU devices passed in."""
+    workflows = Path(__file__).resolve().parents[2] / ".github" / "workflows"
+    gpu_jobs = 0
+    for wf in sorted(workflows.glob("*.yml")):
+        for job, block in job_blocks(wf.read_text()).items():
+            if not re.search(r"^    runs-on: .*\bgfx950\b", block, re.M):
+                continue
+            gpu_jobs += 1
+            where = f"{wf.name}: {job}"
+            has_container = re.search(r"^    container:\n", block, re.M)
+            assert has_container, f"{where}: no container"
+            image = r"^      image: \$\{\{ vars\.(CI_IMAGE|CI_USER_IMAGE) "
+            assert re.search(image, block, re.M), f"{where}: image not from a variable"
+            options = re.search(r"^      options: (.*)$", block, re.M)
+            assert options, f"{where}: no container options"
+            for device in ("/dev/kfd", "/dev/dri"):
+                assert f"--device {device}" in options.group(1), f"{where}: no {device}"
+    assert gpu_jobs >= 2  # rocm-build-test.yml build-test, publish.yml verify

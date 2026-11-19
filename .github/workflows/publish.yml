@@ -15,13 +15,17 @@
 #            runs `kernel-builder upload`; holds the Hub token, never runs kernel code.
 #            A repository the upload creates is private (`--private`; public is
 #            kernel-builder's default); an existing one keeps its visibility
-#   verify   on a clean Python environment on the MI350: one step downloads the
-#            kernel with a read-only token (HF_READ_TOKEN; scripts/ci_download.py,
-#            nothing is imported), then `get_kernel()` loads it offline from that
-#            download, with no token, and the kernel's `kernels_ci` tests run on it
+#   verify   on the MI350, in what a user has: a ROCm PyTorch image (the
+#            CI_USER_IMAGE variable, e.g. rocm/pytorch with ROCm 7.1 and Torch
+#            2.10) plus `kernels` and pytest, no Nix. Its Torch and ROCm must match
+#            a variant the build makes (torch210-rocm71 for that image). One step
+#            downloads the kernel with a read-only token (HF_READ_TOKEN;
+#            scripts/ci_download.py, nothing is imported), then `get_kernel()`
+#            loads it offline from that download, with no token, and the
+#            kernel's `kernels_ci` tests run on it
 #
 # Only main is published: the workflow refuses other refs, and the environment
-# should allow deployments from main only (docs/poc/goal1.md).
+# should allow deployments from main only.
 
 name: Publish kernel
 run-name: Publish ${{ inputs.kernel }} to ${{ inputs.hub_org || vars.HUB_ORG }}
@@ -178,6 +182,11 @@ jobs:
     name: Load from the Hub and test
     needs: [target, upload]
     runs-on: [self-hosted, linux, x64, gfx950]
+    # A ROCm PyTorch image matching a built variant (see the header). An unset
+    # variable fails the pull with this name.
+    container:
+      image: ${{ vars.CI_USER_IMAGE || 'set-the-CI_USER_IMAGE-repository-variable' }}
+      options: --device /dev/kfd --device /dev/dri --group-add video
     timeout-minutes: 60
     permissions:
       contents: read
@@ -187,27 +196,21 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Python
-        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: "3.12"
-
-      # What a user has: PyTorch for ROCm, `kernels` (with huggingface_hub) and pytest.
-      # No Nix, no build.
-      - name: Create a clean user environment
+      # What a user has: the image's PyTorch for ROCm, plus `kernels` (with
+      # huggingface_hub) and pytest. No Nix, no build. Installed into the image's own
+      # Python, where its torch is (a new venv wouldn't see it); the container is
+      # discarded after the job.
+      - name: Add kernels and pytest to the image's PyTorch
         env:
-          TORCH_INDEX_URL: ${{ vars.TORCH_INDEX_URL }}
-          TORCH_VERSION: ${{ vars.TORCH_VERSION }}
+          PIP_BREAK_SYSTEM_PACKAGES: "1"
         run: |
-          if [ -z "$TORCH_INDEX_URL" ]; then
-            echo "::error::Set the TORCH_INDEX_URL repository variable (a PyTorch for ROCm wheel index)"
-            exit 1
-          fi
-          python -m venv "$RUNNER_TEMP/user-venv"
-          "$RUNNER_TEMP/user-venv/bin/pip" install --upgrade pip
-          "$RUNNER_TEMP/user-venv/bin/pip" install --index-url "$TORCH_INDEX_URL" \
-            "torch${TORCH_VERSION:+==$TORCH_VERSION}"
-          "$RUNNER_TEMP/user-venv/bin/pip" install kernels pytest
+          python3 -m pip install kernels pytest
+          python3 - <<'EOF'
+          import sys, torch
+          print("torch", torch.__version__, "hip", torch.version.hip)
+          if not torch.version.hip:
+              sys.exit("torch has no ROCm: is CI_USER_IMAGE a ROCm PyTorch image?")
+          EOF
 
       # The only step with a token: read-only, and nothing from the kernel is imported.
       # Repositories are private, so an anonymous download would be refused.
@@ -223,7 +226,7 @@ jobs:
             echo "::error::Set the HF_READ_TOKEN secret (a read-only Hugging Face token for the organisation)"
             exit 1
           fi
-          "$RUNNER_TEMP/user-venv/bin/python" scripts/ci_download.py \
+          python3 scripts/ci_download.py \
             --repo-id "$REPO_ID" --revision "$BRANCH" --json "$RUNNER_TEMP/download.json"
 
       - name: get_kernel() from the download, then the kernels_ci tests (no token)
@@ -246,7 +249,7 @@ jobs:
             args+=(--tests "$PWD/$CONFIG_DIR/tests" --tests-repo-id "$SOURCE_REPO_ID")
           fi
           cd "$CONFIG_DIR"
-          "$RUNNER_TEMP/user-venv/bin/python" "$GITHUB_WORKSPACE/scripts/ci_verify_load.py" "${args[@]}"
+          python3 "$GITHUB_WORKSPACE/scripts/ci_verify_load.py" "${args[@]}"
 
       - name: Write job summary
         if: always()
