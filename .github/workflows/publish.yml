@@ -181,7 +181,7 @@ jobs:
   verify:
     name: Load from the Hub and test
     needs: [target, upload]
-    runs-on: [self-hosted, linux, x64, gfx950]
+    runs-on: linux-rck-mi350-1
     # A ROCm PyTorch image matching a built variant (see the header). An unset
     # variable fails the pull with this name.
     container:

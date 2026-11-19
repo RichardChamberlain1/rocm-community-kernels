@@ -9,12 +9,13 @@
 # with --fail-on-skip so that a missing GPU, missing Nix or a GPU the kernel
 # doesn't target fails the gate instead of skipping it.
 #
-# Runner: a self-hosted MI350 (gfx950) node with the labels self-hosted, linux, x64
-# and gfx950. The node needs only the GitHub runner agent, Docker able to pull the
-# CI image, and a ROCm driver exposing /dev/kfd and /dev/dri. The job runs in the
-# CI image, named by the CI_IMAGE repository variable (pin it by digest), with
-# those two devices passed in. ci/docker/Dockerfile builds it (ci-image.yml pushes
-# it to the GitHub Container Registry). The image provides:
+# Runner: linux-rck-mi350-1, the project's MI350 (gfx950) runners with one GPU;
+# the kernels_ci tests use one (linux-rck-mi350-2/-4/-8 have more). A runner needs
+# Docker able to pull the CI image (for a Kubernetes runner set, a container mode
+# that allows `container:`) and a ROCm driver exposing /dev/kfd and /dev/dri. The
+# job runs in the CI image, named by the CI_IMAGE repository variable (pin it by
+# digest), with those two devices passed in. ci/docker/Dockerfile builds it
+# (ci-image.yml pushes it to the GitHub Container Registry). The image provides:
 #
 #   - Python 3.12 as `python` and `python3`; git and curl;
 #   - Nix on PATH with flakes, using Hugging Face's binary cache (kernel_ci.py
@@ -59,7 +60,7 @@ permissions:
 jobs:
   build-test:
     name: Build and GPU test
-    runs-on: [self-hosted, linux, x64, gfx950]
+    runs-on: linux-rck-mi350-1
     # The CI image (see the header). An unset variable fails the pull with this name.
     container:
       image: ${{ vars.CI_IMAGE || 'set-the-CI_IMAGE-repository-variable' }}

@@ -148,12 +148,12 @@ def job_blocks(text: str) -> dict[str, str]:
 
 
 def test_gpu_jobs_run_in_the_ci_image():
-    """Jobs on the gfx950 runners run in a CI image, with the GPU devices passed in."""
+    """Jobs on the MI350 runners run in a CI image, with the GPU devices passed in."""
     workflows = Path(__file__).resolve().parents[2] / ".github" / "workflows"
     gpu_jobs = 0
     for wf in sorted(workflows.glob("*.yml")):
         for job, block in job_blocks(wf.read_text()).items():
-            if not re.search(r"^    runs-on: .*\bgfx950\b", block, re.M):
+            if not re.search(r"^    runs-on: .*\blinux-rck-mi350-\d", block, re.M):
                 continue
             gpu_jobs += 1
             where = f"{wf.name}: {job}"
